@@ -4,6 +4,7 @@ import os
 
 import fire
 from google.protobuf.struct_pb2 import Struct
+from docker import auth
 
 import manager_pb2_grpc as pb2_grpc
 import manager_pb2 as pb2
@@ -38,6 +39,24 @@ def create_collection() -> pb2.Collection:
         files_list.append(file)
 
     return pb2.Collection(files=files_list)
+
+
+def create_auth_config(reference: str) -> pb2.AuthConfig:
+    """
+    Create an authentication configuration based on given
+    reference and default configuration locations.
+    This loads from ~/.docker/config.json.
+    """
+    auth_configs = auth.load_config()
+    registry, _ = auth.resolve_repository_name(reference)
+    creds = auth.resolve_authconfig(auth_configs, registry)
+    if creds is not None:
+        auth_config = pb2.AuthConfig(
+            server_address=f"https://{registry}",
+            username=creds["username"],
+            password=creds["password"],
+        )
+        return auth_config
 
 
 class SampleClient:
@@ -84,8 +103,13 @@ class SampleClient:
         abs_workspace = os.path.abspath(workspace)
         logging.debug("Using output directory %s", abs_workspace)
 
+        auth_config = create_auth_config(reference)
+
         req = pb2.Retrieve.Request(
-            source=reference, destination=abs_workspace, filter=attribute_struct
+            source=reference,
+            destination=abs_workspace,
+            filter=attribute_struct,
+            auth=auth_config,
         )
 
         with grpc.insecure_channel(f"unix://{self.socket}") as channel:
@@ -123,8 +147,13 @@ class SampleClient:
         abs_workspace = os.path.abspath(workspace)
         logging.debug("Using workspace %s", abs_workspace)
 
+        auth_config = create_auth_config(reference)
+
         req = pb2.Publish.Request(
-            source=abs_workspace, destination=reference, collection=collection
+            source=abs_workspace,
+            destination=reference,
+            collection=collection,
+            auth=auth_config,
         )
 
         with grpc.insecure_channel(f"unix://{self.socket}") as channel:
@@ -134,10 +163,14 @@ class SampleClient:
 
 
 if __name__ == "__main__":
-    socket_address = os.getenv(
-        "UOR_SOCKET_ADDRESS",
-        "/var/run/uor.sock",
-    )
+    if os.getenv("UOR_SOCKET_ADDRESS", None):
+        socket_address = os.getenv("UOR_SOCKET_ADDRESS")
+    else:
+        socket_address = "/var/run/uor.sock"
+        logging.info(
+            "Using socket location %s. To customize, use the UOR_SOCKET_ADDRESS environment variable.",
+            socket_address,
+        )
 
     sample_client = SampleClient(socket_address)
     fire.Fire(sample_client)
